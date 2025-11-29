@@ -1,0 +1,19 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine = { path = "../engine" }
+winit = { workspace = true }
+nalgebra = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
+egui_dock = { workspace = true }
+pollster = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
