@@ -1,8 +1,52 @@
+use bytemuck::{Pod, Zeroable};
 use egui_wgpu::wgpu;
 use nalgebra::Matrix4;
 use wgpu::util::DeviceExt;
 
 use crate::{PassContext, RenderPass, Shader, Uniforms, Vertex};
+
+/// Per-instance data uploaded to the GPU for instanced draws.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct InstanceData {
+    pub model: [[f32; 4]; 4],
+}
+
+impl InstanceData {
+    pub fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+        // A mat4 is 4 vec4 attributes. We expose them as locations 2..5.
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceData>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                // model column 0
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                // model column 1
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                // model column 2
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 4]>() * 2) as wgpu::BufferAddress,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                // model column 3
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 4]>() * 3) as wgpu::BufferAddress,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
 
 /// Sprite holds GPU resources for a 2D image: the texture view, sampler and dimensions.
 pub struct Sprite {
@@ -109,7 +153,7 @@ impl Sprite {
     }
 }
 
-/// Minimal 2D sprite renderer: pipeline + bind layout + quad geometry.
+/// Minimal 2D sprite renderer: pipeline + bind layout + quad geometry + instancing support.
 pub struct SpriteRenderer {
     pub pipeline: wgpu::RenderPipeline,
     pub texture_bind_layout: wgpu::BindGroupLayout, // @group(1) - texture + sampler
@@ -118,6 +162,10 @@ pub struct SpriteRenderer {
     pub uniform_bind_group: wgpu::BindGroup,
     pub quad_vertex: wgpu::Buffer,
     pub quad_index: wgpu::Buffer,
+
+    // Instance buffer for batching
+    pub instance_buffer: wgpu::Buffer,
+    pub instance_capacity: usize,
 }
 
 impl SpriteRenderer {
@@ -192,7 +240,8 @@ impl SpriteRenderer {
             vertex: wgpu::VertexState {
                 module: &shader.module(),
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::layout()],
+                // include instance attributes as a second buffer
+                buffers: &[Vertex::layout(), InstanceData::layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -252,6 +301,17 @@ impl SpriteRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // ========================================================================
+        // Instance buffer (start with a reasonable default capacity)
+        // ========================================================================
+        let instance_capacity = 1024usize;
+        let empty_instances = vec![InstanceData::zeroed(); instance_capacity];
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance_buffer"),
+            contents: bytemuck::cast_slice(&empty_instances),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
         Self {
             pipeline,
             texture_bind_layout,
@@ -260,24 +320,33 @@ impl SpriteRenderer {
             quad_index,
             uniform_buffer,
             uniform_bind_group,
+            instance_buffer,
+            instance_capacity,
         }
     }
 
-    /// Dessiner une sprite avec son bind group de texture
-    pub fn draw<'a>(
+    /// Dessiner des sprites (instanced). `instance_count` indique combien d'instances seront dessinées
+    /// à partir de la `instance_buffer` (commençant à 0).
+    pub fn draw_instanced<'a>(
         &'a self,
         rpass: &mut wgpu::RenderPass<'a>,
         texture_bind_group: &'a wgpu::BindGroup,
+        instance_count: u32,
     ) {
         rpass.set_pipeline(&self.pipeline);
         rpass.set_vertex_buffer(0, self.quad_vertex.slice(..));
+        rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         rpass.set_index_buffer(self.quad_index.slice(..), wgpu::IndexFormat::Uint16);
 
         // IMPORTANT : bind les 2 groupes dans l'ordre
         rpass.set_bind_group(0, &self.uniform_bind_group, &[]); // @group(0) = uniforms
         rpass.set_bind_group(1, texture_bind_group, &[]); // @group(1) = texture
 
-        rpass.draw_indexed(0..6, 0, 0..1);
+        if instance_count == 0 {
+            return;
+        }
+
+        rpass.draw_indexed(0..6, 0, 0..instance_count);
     }
 
     /// Mettre à jour la matrice de transformation
@@ -342,11 +411,58 @@ impl RenderPass for SpritePass {
             timestamp_writes: None,
         };
 
-        // Ouvrir la render pass et dessiner toutes les sprites
+        // Ouvrir la render pass
         let mut rpass = ctx.encoder.begin_render_pass(&descriptor);
 
-        for (_sprite, texture_bind_group) in &self.sprites {
-            self.renderer.draw(&mut rpass, texture_bind_group);
+        // Group sprites by bind_group pointer to batch those that share the same texture
+        use std::collections::HashMap;
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, (_sprite, bind_group)) in self.sprites.iter().enumerate() {
+            let key = bind_group as *const _ as usize;
+            groups.entry(key).or_default().push(i);
+        }
+
+        // For each group, build instance data and draw in a single instanced call
+        for (key, indices) in groups {
+            // Build instance data for this group
+            let mut instances: Vec<InstanceData> = Vec::with_capacity(indices.len());
+            for &i in &indices {
+                let (sprite, _bg) = &self.sprites[i];
+                // For now, place identity model matrix; you can expand to include position/scale/rotation
+                let model = Matrix4::<f32>::identity();
+                instances.push(InstanceData {
+                    model: model.into(),
+                });
+            }
+
+            // Ensure capacity: if needed, we would resize the GPU buffer (not implemented auto-resize here)
+            if instances.len() > self.renderer.instance_capacity {
+                // If we need to support more instances than capacity, we should recreate the buffer.
+                // For simplicity, clamp to capacity.
+                // In a real implementation, recreate buffer with larger capacity.
+                // Log a warning:
+                log::warn!(
+                    "Instance count {} exceeds buffer capacity {}; clipping.",
+                    instances.len(),
+                    self.renderer.instance_capacity
+                );
+            }
+
+            // Upload instance data to the GPU
+            let bytes = bytemuck::cast_slice(
+                &instances[..std::cmp::min(instances.len(), self.renderer.instance_capacity)],
+            );
+            ctx.queue
+                .write_buffer(&self.renderer.instance_buffer, 0, bytes);
+
+            // Retrieve any bind_group for this group (take first)
+            let first_index = indices[0];
+            let (_sprite0, bind_group0) = &self.sprites[first_index];
+
+            // Draw instanced for this group's instances
+            let instance_count = instances.len().min(self.renderer.instance_capacity) as u32;
+            self.renderer
+                .draw_instanced(&mut rpass, bind_group0, instance_count);
         }
 
         // La render pass se termine automatiquement ici
