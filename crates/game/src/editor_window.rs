@@ -8,17 +8,17 @@ use engine::{
     Camera2D, CameraMovement, DeltaTimer, PassContext, PassManager, Scene, Sprite, SpritePass,
     Window, WindowFactory, WindowState,
 };
-use nalgebra::Point3;
+
 use winit::{dpi::PhysicalSize, event::DeviceEvent, keyboard::KeyCode, window::CursorGrabMode};
 
 pub struct EditorWindow {
     window: Arc<winit::window::Window>,
-    pub scene: Arc<Mutex<Scene>>,
+    pub scene: Scene,
     pub state: Arc<Mutex<WindowState>>,
     pub mouse_captured: bool,
     pub delta_timer: DeltaTimer,
     pressed_keys: HashSet<KeyCode>,
-    pass_manager: Arc<Mutex<PassManager>>,
+    pass_manager: PassManager,
 
     // NEW: accumulate raw mouse delta here too (optional),
     // mais on peut aussi appeler scene.accumulate_mouse directement depuis device_event.
@@ -83,8 +83,8 @@ impl EditorWindow {
         Self {
             window,
             state: Arc::new(Mutex::new(state)),
-            scene: Arc::new(Mutex::new(scene)),
-            pass_manager: Arc::new(Mutex::new(pass_manager)),
+            scene,
+            pass_manager,
             mouse_captured: false,
             delta_timer: DeltaTimer::new(),
             pressed_keys: HashSet::new(),
@@ -112,7 +112,7 @@ impl EditorWindow {
             return;
         }
 
-        let mut scene = self.scene.lock().unwrap();
+        let scene = &mut self.scene;
 
         // Traiter chaque direction pressée
         for key in &self.pressed_keys {
@@ -188,21 +188,21 @@ impl Window for EditorWindow {
             // soit on a accumulé dans pending_mouse_* localement,
             // soit on appelle directement scene.accumulate_mouse depuis device_event.
             if self.pending_mouse_dx != 0.0 || self.pending_mouse_dy != 0.0 {
-                let mut scene = self.scene.lock().unwrap();
-                scene.accumulate_mouse(self.pending_mouse_dx, self.pending_mouse_dy);
+                // appliquer directement sur la scène (single-threaded ownership)
+                self.scene
+                    .accumulate_mouse(self.pending_mouse_dx, self.pending_mouse_dy);
 
                 self.pending_mouse_dx = 0.0;
                 self.pending_mouse_dy = 0.0;
             }
         }
 
-        let mut scene = self.scene.lock().unwrap();
-        scene.update(delta_time);
+        self.scene.update(delta_time);
 
         // 5) Prepare GPU uploads
-        scene.prepare_gpu(&window_state.queue);
+        self.scene.prepare_gpu(&window_state.queue);
 
-        scene.render(
+        self.scene.render(
             encoder,
             surface_view,
             &window_state.device,
@@ -213,11 +213,10 @@ impl Window for EditorWindow {
             encoder,
             target: &surface_view,
             queue: &window_state.queue,
-            camera: &scene.camera,
+            camera: &self.scene.camera,
         };
 
-        let pass_manager = self.pass_manager.lock().unwrap();
-        pass_manager.execute_all(&mut pass_ctx);
+        self.pass_manager.execute_all(&mut pass_ctx);
 
         // 7) UI / egui -> handle ensuite
     }
@@ -247,21 +246,31 @@ impl Window for EditorWindow {
 
     fn handle_resized(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
-            let mut state = self.state().lock().unwrap();
-            state.resize_surface(width, height);
+            // Acquire and release the state lock only for resizing the surface to avoid
+            // holding the lock while mutating `self.scene` (owned by the window).
+            {
+                let mut state = self.state.lock().unwrap();
+                state.resize_surface(width, height);
+            }
 
-            let mut scene = self.scene.lock().unwrap();
-            scene.camera.set_viewport_size(width as f32, height as f32);
+            // Now that the state lock is released, safely update the camera viewport.
+            self.scene
+                .camera
+                .set_viewport_size(width as f32, height as f32);
         }
     }
 }
 
 impl WindowFactory for EditorWindow {
-    async fn create(winit_window: winit::window::Window) -> Result<Self, Box<dyn std::error::Error>>
+    fn create(
+        winit_window: winit::window::Window,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self, Box<dyn std::error::Error>>> + Send>,
+    >
     where
         Self: Sized,
     {
-        Ok(EditorWindow::new(winit_window).await)
+        Box::pin(async move { Ok(EditorWindow::new(winit_window).await) })
     }
 }
 

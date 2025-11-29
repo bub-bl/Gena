@@ -8,17 +8,24 @@ use winit::{
 use crate::Window;
 
 pub trait WindowFactory {
+    /// Create a window asynchronously.
+    /// Returns a pinned boxed Future so this can be expressed without async-trait.
     fn create(
         winit_window: winit::window::Window,
-    ) -> impl Future<Output = Result<Self, Box<dyn std::error::Error>>>
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self, Box<dyn std::error::Error>>> + Send>,
+    >
     where
         Self: Sized;
 }
 
 #[derive(Default)]
 pub struct WindowManager {
-    pub windows: Vec<Arc<Mutex<dyn Window>>>,
-    pub active_window: Option<Arc<Mutex<dyn Window>>>,
+    /// Keep the Send bound on the trait object so stored windows can safely be moved
+    /// between threads if needed. We still keep a `Mutex` for mutability control,
+    /// because Window methods require `&mut self` in many places.
+    pub windows: Vec<Arc<Mutex<dyn Window + Send>>>,
+    pub active_window: Option<Arc<Mutex<dyn Window + Send>>>,
 }
 
 impl WindowManager {
@@ -29,13 +36,14 @@ impl WindowManager {
         }
     }
 
-    // Méthode générique pour créer n'importe quel type de fenêtre
+    // Méthode générique pour créer n'importe quel type de fenêtre.
+    // Note: the window type must be Send so it can be owned by the manager safely.
     pub async fn create_window<W>(
         &mut self,
         event_loop: &ActiveEventLoop,
     ) -> Result<Arc<Mutex<W>>, Box<dyn std::error::Error>>
     where
-        W: Window + 'static,
+        W: Window + Send + 'static,
         W: WindowFactory, // Trait pour créer des fenêtres
     {
         let winit_window = event_loop
@@ -46,7 +54,7 @@ impl WindowManager {
         let window = Arc::new(Mutex::new(window));
 
         // Cast vers le trait Window pour l'ajouter à la liste générale
-        let window_as_trait: Arc<Mutex<dyn Window>> = window.clone();
+        let window_as_trait: Arc<Mutex<dyn Window + Send>> = window.clone();
         self.windows.push(window_as_trait.clone());
 
         // Définir comme fenêtre active
@@ -78,15 +86,15 @@ impl WindowManager {
         // }
     }
 
-    pub fn set_active_window(&mut self, window: Arc<Mutex<dyn Window>>) {
+    pub fn set_active_window(&mut self, window: Arc<Mutex<dyn Window + Send>>) {
         self.active_window = Some(window);
     }
 
-    pub fn get_active_window(&self) -> Option<Arc<Mutex<dyn Window>>> {
+    pub fn get_active_window(&self) -> Option<Arc<Mutex<dyn Window + Send>>> {
         self.active_window.clone()
     }
 
-    pub fn get_window(&self, window_id: WindowId) -> Option<Arc<Mutex<dyn Window>>> {
+    pub fn get_window(&self, window_id: WindowId) -> Option<Arc<Mutex<dyn Window + Send>>> {
         self.windows
             .iter()
             .find(|w| {
@@ -117,7 +125,7 @@ impl WindowManager {
     }
 
     // Méthode pour itérer sur toutes les fenêtres
-    pub fn iter_windows(&self) -> impl Iterator<Item = &Arc<Mutex<dyn Window>>> {
+    pub fn iter_windows(&self) -> impl Iterator<Item = &Arc<Mutex<dyn Window + Send>>> {
         self.windows.iter()
     }
 
