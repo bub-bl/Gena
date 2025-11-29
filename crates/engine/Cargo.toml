@@ -16,6 +16,6 @@ egui = { workspace = true }
 egui-wgpu = { workspace = true }
 egui-winit = { workspace = true }
 egui_dock = { workspace = true }
-# hecs = { workspace = true }
+hecs = { workspace = true }
 image = { workspace = true }
 uuid = { workspace = true }
