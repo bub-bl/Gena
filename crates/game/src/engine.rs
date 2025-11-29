@@ -10,11 +10,11 @@ use winit::{
 use crate::editor_window::EditorWindow;
 
 #[derive(Default)]
-pub struct App {
+pub struct Engine {
     window_manager: WindowManager,
 }
 
-impl App {
+impl Engine {
     pub fn new() -> Self {
         Self {
             window_manager: WindowManager::default(),
@@ -22,7 +22,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler for Engine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = pollster::block_on(
             self.window_manager
@@ -46,10 +46,10 @@ impl ApplicationHandler for App {
         if let Some(window_arc) = self.window_manager.get_window(window_id)
             && let Ok(mut window) = window_arc.lock()
         {
-            // CORRECTION 1: Utiliser window() au lieu de instance()
+            // Utiliser window() au lieu de instance()
             let wnd = window.window();
 
-            // CORRECTION 2: Accéder à egui_renderer via state()
+            // Accéder à egui_renderer via state()
             let consumed = {
                 let mut state = window.state().lock().unwrap();
                 state.egui_renderer.handle_input(wnd, &event).consumed
@@ -67,13 +67,12 @@ impl ApplicationHandler for App {
                     {
                         match event.state {
                             ElementState::Pressed => {
-                                // CORRECTION 3: Accéder à mouse_captured via le trait Window
+                                // Accéder à mouse_captured via le trait Window
                                 if window.is_mouse_captured() {
                                     if keycode == KeyCode::Escape {
                                         window.set_mouse_capture(false);
                                     } else {
-                                        // CORRECTION 4: Accéder à pressed_keys via state()
-
+                                        // Accéder à pressed_keys via state()
                                         window.on_key_pressed(keycode);
 
                                         let mut state = window.state().lock().unwrap();
@@ -84,7 +83,7 @@ impl ApplicationHandler for App {
                                 }
                             }
                             ElementState::Released => {
-                                // CORRECTION 5: Accéder à pressed_keys via state()
+                                // Accéder à pressed_keys via state()
                                 window.on_key_released(keycode);
 
                                 let mut state = window.state().lock().unwrap();

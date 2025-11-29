@@ -1,7 +1,7 @@
-mod app;
 mod editor_window;
+mod engine;
 
-use app::*;
+use engine::Engine;
 
 use anyhow::Result;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new();
+    let mut app = Engine::new();
 
     log::info!("Entrée dans la boucle principale...");
     event_loop.run_app(&mut app)?;
