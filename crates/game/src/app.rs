@@ -77,7 +77,7 @@ impl ApplicationHandler for App {
                                         window.on_key_pressed(keycode);
 
                                         let mut state = window.state().lock().unwrap();
-                                        state.pressed_keys.insert(keycode);
+                                        state.press_key(keycode);
 
                                         log::info!("Pressed key: {:?}", keycode);
                                     }
@@ -88,7 +88,7 @@ impl ApplicationHandler for App {
                                 window.on_key_released(keycode);
 
                                 let mut state = window.state().lock().unwrap();
-                                state.pressed_keys.remove(&keycode);
+                                state.release_key(keycode);
                             }
                         }
                     }

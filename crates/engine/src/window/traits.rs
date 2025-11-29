@@ -14,7 +14,7 @@ pub trait Window {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
-        state: &WindowState,
+        state: &mut WindowState,
     );
     fn draw(&mut self, ctx: &egui::Context);
     fn is_mouse_captured(&self) -> bool;
@@ -131,7 +131,7 @@ pub trait Window {
                         label: Some("Render Encoder"),
                     });
 
-            self.render(&mut encoder, &surface_view, &state);
+            self.render(&mut encoder, &surface_view, &mut *state);
 
             let ctx = {
                 state.begin_frame(&window_arc);

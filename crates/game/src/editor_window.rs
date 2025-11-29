@@ -178,17 +178,20 @@ impl Window for EditorWindow {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
-        window_state: &WindowState,
+        window_state: &mut WindowState,
     ) {
         let delta_time = self.delta_timer.update();
 
         self.process_continuous_movement(delta_time);
 
-        if self.mouse_captured {
-            // soit on a accumulé dans pending_mouse_* localement,
-            // soit on appelle directement scene.accumulate_mouse depuis device_event.
+        // Prefer consuming mouse delta from the central WindowState input.
+        let (dx, dy) = window_state.take_mouse_delta();
+        if window_state.is_mouse_captured() && (dx != 0.0 || dy != 0.0) {
+            // apply to the scene (single-threaded ownership)
+            self.scene.accumulate_mouse(dx, dy);
+        } else if self.mouse_captured {
+            // fallback: if for some reason local accumulation exists, consume it.
             if self.pending_mouse_dx != 0.0 || self.pending_mouse_dy != 0.0 {
-                // appliquer directement sur la scène (single-threaded ownership)
                 self.scene
                     .accumulate_mouse(self.pending_mouse_dx, self.pending_mouse_dy);
 
@@ -199,20 +202,20 @@ impl Window for EditorWindow {
 
         self.scene.update(delta_time);
 
-        // 5) Prepare GPU uploads
-        self.scene.prepare_gpu(&window_state.queue);
+        // 5) Prepare GPU uploads using WindowState helpers
+        self.scene.prepare_gpu(window_state.queue());
 
         self.scene.render(
             encoder,
             surface_view,
-            &window_state.device,
-            &window_state.queue,
+            window_state.device(),
+            window_state.queue(),
         );
 
         let mut pass_ctx = PassContext {
             encoder,
             target: &surface_view,
-            queue: &window_state.queue,
+            queue: window_state.queue(),
             camera: &self.scene.camera,
         };
 
