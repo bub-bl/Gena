@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 use egui_wgpu::wgpu;
 use nalgebra::Matrix4;
@@ -48,16 +50,18 @@ impl InstanceData {
     }
 }
 
-/// Sprite holds GPU resources for a 2D image: the texture view, sampler and dimensions.
-pub struct Sprite {
+/// GPU texture wrapper: owns the GPU `Texture`, `TextureView` and `Sampler`.
+/// This is reusable between multiple `Sprite` descriptors.
+pub struct Texture2D {
+    pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     pub width: u32,
     pub height: u32,
 }
 
-impl Sprite {
-    /// Create a Sprite from raw image bytes (any format supported by `image` crate).
+impl Texture2D {
+    /// Create a GPU texture from raw image bytes (any format supported by `image` crate).
     pub fn from_bytes(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -72,7 +76,7 @@ impl Sprite {
         };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("sprite_texture"),
+            label: Some("texture2d_texture"),
             size,
             mip_level_count: 1,
             sample_count: 1,
@@ -84,24 +88,24 @@ impl Sprite {
 
         // Upload pixel data (RGBA8)
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+            wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &img,
-            wgpu::TexelCopyBufferLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
+                bytes_per_row: Some((4 * width) as u32),
+                rows_per_image: Some(height as u32),
             },
             size,
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("sprite_sampler"),
+            label: Some("texture2d_sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -112,6 +116,7 @@ impl Sprite {
         });
 
         Ok(Self {
+            texture,
             view,
             sampler,
             width,
@@ -119,7 +124,7 @@ impl Sprite {
         })
     }
 
-    /// Convenience: load image file from disk and create Sprite.
+    /// Convenience: load image file from disk and create Texture2D.
     pub fn from_file(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -129,7 +134,7 @@ impl Sprite {
         Self::from_bytes(device, queue, &bytes)
     }
 
-    /// Create a bind group for this sprite given a `bind_group_layout` that expects:
+    /// Create a bind group for this texture given a `bind_group_layout` that expects:
     /// binding 0 = texture view (sampled texture), binding 1 = sampler.
     pub fn create_bind_group(
         &self,
@@ -137,7 +142,7 @@ impl Sprite {
         bind_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("sprite_bind_group"),
+            label: Some("texture2d_bind_group"),
             layout: bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -153,7 +158,67 @@ impl Sprite {
     }
 }
 
-/// Minimal 2D sprite renderer: pipeline + bind layout + quad geometry + instancing support.
+/// Sprite descriptor referencing a `Texture2D`.
+/// Keeps per-sprite metadata (for now minimal; can be extended: uv rect, tint, pivot, etc.).
+#[derive(Clone)]
+pub struct Sprite {
+    pub texture: Arc<Texture2D>,
+    /// UV rectangle in normalized coordinates [u0, v0, u1, v1] referencing the underlying texture.
+    /// Defaults to full texture [0,0,1,1].
+    pub uv: [f32; 4],
+    /// Optional logical size override (if you want sprites to have different logical size than texture)
+    pub size: Option<(f32, f32)>,
+}
+
+impl Sprite {
+    /// Create a sprite that uses the full texture.
+    pub fn from_texture(texture: Arc<Texture2D>) -> Self {
+        Self {
+            texture,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            size: None,
+        }
+    }
+
+    /// Convenience: load texture from file and wrap in a Sprite.
+    pub fn from_file(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &str,
+    ) -> Result<Self, image::ImageError> {
+        let tex = Texture2D::from_file(device, queue, path)?;
+        Ok(Self::from_texture(Arc::new(tex)))
+    }
+
+    /// Convenience: create from bytes and wrap in a Sprite.
+    pub fn from_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bytes: &[u8],
+    ) -> Result<Self, image::ImageError> {
+        let tex = Texture2D::from_bytes(device, queue, bytes)?;
+        Ok(Self::from_texture(Arc::new(tex)))
+    }
+
+    /// Create the bind group for the underlying texture using the provided layout.
+    pub fn create_bind_group(
+        &self,
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        self.texture.create_bind_group(device, bind_group_layout)
+    }
+
+    /// Convenience accessor for texture size
+    pub fn texture_size(&self) -> (u32, u32) {
+        (self.texture.width, self.texture.height)
+    }
+}
+
+// ============================================================================
+// SpriteRenderer (unchanged behavior - still owns pipeline, instance buffer, etc.)
+// ============================================================================
+
 pub struct SpriteRenderer {
     pub pipeline: wgpu::RenderPipeline,
     pub texture_bind_layout: wgpu::BindGroupLayout, // @group(1) - texture + sampler
@@ -365,7 +430,8 @@ impl SpriteRenderer {
 /// Passe de rendu pour afficher des sprites
 pub struct SpritePass {
     renderer: SpriteRenderer,
-    sprites: Vec<(Sprite, wgpu::BindGroup)>, // Liste de sprites à afficher
+    // now we keep Sprite descriptors together with a precomputed bind group for batching
+    sprites: Vec<(Sprite, wgpu::BindGroup)>,
 }
 
 impl SpritePass {
@@ -378,7 +444,9 @@ impl SpritePass {
         }
     }
 
-    /// Ajouter une sprite à afficher dans cette passe
+    /// Ajouter une sprite à afficher dans cette passe.
+    /// The provided `Sprite` references a `Texture2D`; we create a bind group for that texture using
+    /// the renderer's `texture_bind_layout` and store the pair for batched rendering.
     pub fn add_sprite(&mut self, sprite: Sprite, device: &wgpu::Device) {
         let bind_group = sprite.create_bind_group(device, &self.renderer.texture_bind_layout);
         self.sprites.push((sprite, bind_group));
@@ -423,7 +491,7 @@ impl RenderPass for SpritePass {
         }
 
         // For each group, build instance data and draw in a single instanced call
-        for (key, indices) in groups {
+        for (_key, indices) in groups {
             // Build instance data for this group
             let mut instances: Vec<InstanceData> = Vec::with_capacity(indices.len());
             for &i in &indices {
