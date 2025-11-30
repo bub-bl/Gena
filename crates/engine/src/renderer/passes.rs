@@ -1,43 +1,25 @@
-// use egui_wgpu::wgpu;
-// use egui_wgpu::wgpu::{CommandEncoder, Queue, TextureView};
-
-// use crate::Camera;
-
-// pub trait RenderPass {
-//     fn render(
-//         &self,
-//         encoder: &mut wgpu::CommandEncoder,
-//         target: &wgpu::TextureView,
-//         queue: &wgpu::Queue,
-//         camera: &Camera,
-//     );
-// }
-
-// pub struct OpaquePass;
-
-// impl RenderPass for OpaquePass {
-//     fn render(
-//         &self,
-//         encoder: &mut CommandEncoder,
-//         target: &TextureView,
-//         camera: &Camera,
-//         queue: &Queue,
-//     ) {
-//     }
-// }
-
 use egui_wgpu::wgpu;
 use wgpu::{CommandEncoder, Queue, TextureView};
+use winit::window::Window;
 
 use crate::Camera2D;
+use crate::WindowState;
 
 /// Contexte fourni à chaque pass lors de l'exécution.
 /// Contient des références vers les ressources par-frame (encoder, target, queue, camera).
+/// Expose également la `winit::window::Window` et le `WindowState` afin que les passes
+/// (par exemple une passe qui dessine l'UI via egui) puissent interagir avec la fenêtre
+/// et l'état associé.
 pub struct PassContext<'a> {
     pub encoder: &'a mut CommandEncoder,
     pub target: &'a TextureView,
     pub queue: &'a Queue,
     pub camera: &'a Camera2D,
+    /// Référence immuable à la winit Window (utile pour egui / platform output).
+    pub window: &'a Window,
+    /// Référence mutable au WindowState pour la frame courante.
+    /// Permet d'accéder à `egui_renderer`, `queue`, `device`, etc. depuis une passe.
+    pub window_state: &'a mut WindowState,
 }
 
 /// Trait simple et ergonomique pour une passe de rendu.

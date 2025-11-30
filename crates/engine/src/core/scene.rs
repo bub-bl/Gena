@@ -3,6 +3,7 @@ use egui_wgpu::wgpu;
 use nalgebra::Vector2;
 
 pub struct Scene {
+    pub name: String,
     pub camera: Camera2D,
 
     // Accumulate raw mouse delta between frames (DeviceEvent)
@@ -10,8 +11,9 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn new(camera: Camera2D) -> Self {
+    pub fn new(name: String, camera: Camera2D) -> Self {
         Self {
+            name,
             camera,
             mouse_delta: Vector2::new(0.0, 0.0),
         }

@@ -5,6 +5,8 @@ use egui_winit::{EventResponse, State};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use crate::{PassContext, RenderPass};
+
 pub struct EguiRenderer {
     state: State,
     renderer: Renderer,
@@ -75,7 +77,12 @@ impl EguiRenderer {
         screen_descriptor: ScreenDescriptor,
     ) {
         if !self.frame_started {
-            panic!("begin_frame must be called before end_frame_and_draw!");
+            // Avoid panicking if begin_frame wasn't called. Log and return instead to
+            // keep the renderer stable if callers forget to start the frame.
+            eprintln!(
+                "Warning: end_frame_and_draw called without a matching begin_frame; skipping draw."
+            );
+            return;
         }
 
         self.context()
@@ -122,5 +129,51 @@ impl EguiRenderer {
         }
 
         self.frame_started = false;
+    }
+}
+
+/// Render pass wrapper to run egui's end-frame drawing within the Pass system.
+///
+/// This pass assumes the window has already begun the egui frame (`begin_frame`)
+/// and the application has already populated the UI via `Window::draw(...)`.
+/// The pass performs the final buffer updates and submits the render pass that
+/// draws the tessellated egui meshes into the provided render target.
+pub struct EguiPass;
+
+impl EguiPass {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl RenderPass for EguiPass {
+    fn name(&self) -> &str {
+        "egui_pass"
+    }
+
+    fn prepare(&mut self, _device: &wgpu::Device, _queue: &Queue) {
+        // No preparation needed here; EguiRenderer resources are owned by WindowState.
+    }
+
+    fn execute(&self, ctx: &mut PassContext) {
+        // Build screen descriptor from WindowState + actual window scale.
+        let width = ctx.window_state.config.width;
+        let height = ctx.window_state.config.height;
+        let pixels_per_point = ctx.window.scale_factor() as f32 * ctx.window_state.scale_factor;
+
+        let screen_descriptor = ScreenDescriptor {
+            size_in_pixels: [width, height],
+            pixels_per_point,
+        };
+
+        // Drive egui end-frame + draw using the window's EguiRenderer instance.
+        ctx.window_state.egui_renderer.end_frame_and_draw(
+            &ctx.window_state.device,
+            ctx.queue,
+            ctx.encoder,
+            ctx.window,
+            ctx.target,
+            screen_descriptor,
+        );
     }
 }

@@ -5,8 +5,8 @@ use std::{
 
 use egui_wgpu::wgpu::{self};
 use engine::{
-    Camera2D, CameraMovement, DeltaTimer, PassContext, PassManager, Scene, Sprite, SpritePass,
-    Window, WindowFactory, WindowState,
+    Camera2D, CameraMovement, DeltaTimer, EguiPass, PassContext, PassManager, Scene, Sprite,
+    SpritePass, Window, WindowFactory, WindowState,
 };
 
 use winit::{dpi::PhysicalSize, event::DeviceEvent, keyboard::KeyCode, window::CursorGrabMode};
@@ -55,7 +55,7 @@ impl EditorWindow {
         let queue = &state.queue;
 
         let camera = Camera2D::new(window_width as f32, window_height as f32);
-        let scene = Scene::new(camera);
+        let scene = Scene::new("Test Scene".to_string(), camera);
         let mut pass_manager = PassManager::new();
 
         let mut sprite_pass = SpritePass::new(&device, surface_format);
@@ -79,6 +79,8 @@ impl EditorWindow {
         sprite_pass.add_sprite(test_sprite, device);
 
         pass_manager.add(sprite_pass);
+        // Add the Egui pass so UI is drawn via the PassManager system
+        pass_manager.add(EguiPass::new());
 
         Self {
             window,
@@ -212,11 +214,14 @@ impl Window for EditorWindow {
             window_state.queue(),
         );
 
+        let queue = window_state.queue.clone();
         let mut pass_ctx = PassContext {
             encoder,
             target: &surface_view,
-            queue: window_state.queue(),
+            queue: &queue,
             camera: &self.scene.camera,
+            window: &*self.window,
+            window_state,
         };
 
         self.pass_manager.execute_all(&mut pass_ctx);
